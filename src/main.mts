@@ -177,7 +177,7 @@ const toTags = (chainId: string, pairs: Pair[]): ContractTag[] => {
       "Public Name Tag": nameTag,
       "Project Name": PROJECT_NAME,
       "UI/Website Link": PROJECT_URL,
-      "Public Note": `Fraxlend's isolated lending pair (Symbol: ${pairSymbol}), lending ${lends} (Symbol: ${assetSymbol}) against ${against} (Symbol: ${collateralSymbol}) as collateral, on the ${config.network} network.`,
+      "Public Note": `Fraxlend's isolated lending pair and its ERC-20 share token (Symbol: ${pairSymbol}), lending ${lends} (Symbol: ${assetSymbol}) against ${against} (Symbol: ${collateralSymbol}) as collateral, on the ${config.network} network.`,
     });
   }
   return tags;
