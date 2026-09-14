@@ -19,11 +19,12 @@ Frax names its publishing account in its own documentation at
 | Chain ID | Network | Deployment |
 |---|---|---|
 | 1 | Ethereum | `QmSWZDbG2ezGjGhuRELuv9quzgs5wHusz7brFUq8CMb5uk` |
-| 988 | Stable | `QmetWPs5US8E1SNjd3Zw1nycegULa4oAGJzspuowBUeakW` |
 | 42161 | Arbitrum One | `QmRKm6THtyr3Ej73LF9jVe4GdSiq1sMQg4XVip6axvLdHm` |
 
 Fraxtal (252) is deliberately excluded: its Fraxlend deployment carries a
-non-zero `deniedAt` on the network and is served unreliably.
+non-zero `deniedAt` on the network and is served unreliably. Stable (988) is
+excluded because its only allocation is The Graph's upgrade indexer and it has
+no curation signal, which the registry policy treats as unavailable.
 
 ## Build and verify
 

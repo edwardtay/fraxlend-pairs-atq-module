@@ -14,7 +14,9 @@ import { ContractTag, ITagService } from "atq-types";
 // chain distinct.
 //
 // The Fraxtal deployment is deliberately absent: it carries a non-zero
-// deniedAt on the network and is served unreliably.
+// deniedAt on the network and is served unreliably. The Stable deployment is
+// absent too: it has no curation signal and its only allocation belongs to The
+// Graph's upgrade indexer, which the registry policy treats as unavailable.
 
 interface ChainConfig {
   network: string;
@@ -26,13 +28,13 @@ interface ChainConfig {
 // https://docs.frax.com/protocol/integration/api
 const CHAIN_CONFIGS: Readonly<Record<string, ChainConfig>> = {
   "1": { network: "Ethereum", deploymentId: "QmSWZDbG2ezGjGhuRELuv9quzgs5wHusz7brFUq8CMb5uk" },
-  "988": { network: "Stable", deploymentId: "QmetWPs5US8E1SNjd3Zw1nycegULa4oAGJzspuowBUeakW" },
   "42161": { network: "Arbitrum One", deploymentId: "QmRKm6THtyr3Ej73LF9jVe4GdSiq1sMQg4XVip6axvLdHm" },
 };
 
 const PROJECT_NAME = "Fraxlend";
 const PROJECT_URL = "https://app.frax.finance/fraxlend/available-pairs";
 const PAGE_SIZE = 1000;
+const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_NAME_TAG = 50;
 const NAME_TAG_SUFFIX = " Lending Pair";
 
@@ -44,6 +46,7 @@ interface Token {
 interface Pair {
   id: string;
   address: string | null;
+  name: string | null;
   symbol: string | null;
   asset: Token | null;
   collateral: Token | null;
@@ -71,6 +74,7 @@ query GetPairs($lastId: ID!) {
   ) {
     id
     address
+    name
     symbol
     asset {
       symbol
@@ -99,8 +103,9 @@ const trimmed = (value: string | null | undefined): string =>
   typeof value === "string" ? value.trim() : "";
 
 const buildUrl = (chainId: string, apiKey: string): string => {
-  const config = CHAIN_CONFIGS[chainId];
-  if (!config) {
+  // An own-property check, so inherited names such as "constructor" are rejected
+  // as unsupported instead of reaching the network.
+  if (!Object.prototype.hasOwnProperty.call(CHAIN_CONFIGS, chainId)) {
     const supported = Object.keys(CHAIN_CONFIGS).join(", ");
     throw new Error(
       `Unsupported Chain ID: ${chainId}. Supported Chain IDs are: ${supported}.`
@@ -109,23 +114,45 @@ const buildUrl = (chainId: string, apiKey: string): string => {
   if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
     throw new Error("An API key must be provided to returnTags.");
   }
-  return `https://gateway.thegraph.com/api/${apiKey}/deployments/id/${config.deploymentId}`;
+  const config = CHAIN_CONFIGS[chainId];
+  // The key is trimmed and encoded, so characters such as "/" or "?" cannot
+  // change the gateway path the request is sent to.
+  return `https://gateway.thegraph.com/api/${encodeURIComponent(
+    apiKey.trim()
+  )}/deployments/id/${config.deploymentId}`;
 };
 
 const fetchPairs = async (url: string, lastId: string): Promise<Pair[]> => {
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ query: GET_PAIRS_QUERY, variables: { lastId } }),
-  });
+  // Every request is bounded, so a gateway that stops responding produces an
+  // Error instead of leaving the call pending indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let result: GraphQLResponse;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: GET_PAIRS_QUERY, variables: { lastId } }),
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(
-      `The Fraxlend subgraph returned HTTP ${response.status} ${response.statusText}.`
-    );
+    if (!response.ok) {
+      throw new Error(
+        `The Fraxlend subgraph returned HTTP ${response.status} ${response.statusText}.`
+      );
+    }
+
+    result = (await response.json()) as GraphQLResponse;
+  } catch (error) {
+    if (isError(error) && error.name === "AbortError") {
+      throw new Error(
+        `The Fraxlend subgraph did not respond within ${REQUEST_TIMEOUT_MS / 1000} seconds.`
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const result = (await response.json()) as GraphQLResponse;
 
   if (result.errors && result.errors.length > 0) {
     const detail = result.errors.map((e) => e.message).join("; ");
@@ -159,16 +186,25 @@ const toTags = (chainId: string, pairs: Pair[]): ContractTag[] => {
     const pairSymbol = trimmed(pair.symbol);
     const assetSymbol = trimmed(pair.asset ? pair.asset.symbol : null);
     const collateralSymbol = trimmed(pair.collateral ? pair.collateral.symbol : null);
+    // A pair whose own symbol, asset symbol or collateral symbol is missing or
+    // malformed cannot be named or described accurately, so it is skipped rather
+    // than tagged with a placeholder.
     if (!isUsable(pairSymbol) || !isUsable(assetSymbol) || !isUsable(collateralSymbol)) {
       continue;
     }
+    // The earliest pairs carry no index in their symbol ("FraxlendV1 - CRV/FRAX"),
+    // so two pairs over the same assets would share a tag. Their ERC-20 name ends
+    // with the pair index, which is appended to keep every tag on a chain distinct.
+    const nameIndex = /-\s*(\d+)\s*$/.exec(trimmed(pair.name));
+    const pairLabel =
+      /-\d+$/.test(pairSymbol) || nameIndex === null ? pairSymbol : `${pairSymbol}-${nameIndex[1]}`;
     const assetName = trimmed(pair.asset ? pair.asset.name : null);
     const collateralName = trimmed(pair.collateral ? pair.collateral.name : null);
     const lends = isUsable(assetName) ? assetName : assetSymbol;
     const against = isUsable(collateralName) ? collateralName : collateralSymbol;
 
     const nameTag = `${truncate(
-      pairSymbol,
+      pairLabel,
       MAX_NAME_TAG - NAME_TAG_SUFFIX.length
     )}${NAME_TAG_SUFFIX}`;
 
